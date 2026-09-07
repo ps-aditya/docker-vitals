@@ -1,0 +1,115 @@
+{
+  "name": "docker-vitals",
+  "displayName": "Docker Vitals",
+  "description": "Live container resource stats and event timeline for VS Code. See CPU, memory, and network usage update in real time, and watch exactly what changed when you save your Dockerfile or docker-compose.yml.",
+  "version": "0.1.0",
+  "publisher": "REPLACE_WITH_YOUR_PUBLISHER_ID",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ps-aditya/docker-vitals"
+  },
+  "homepage": "https://github.com/ps-aditya/docker-vitals#readme",
+  "bugs": {
+    "url": "https://github.com/ps-aditya/docker-vitals/issues"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1e1e1e",
+    "theme": "dark"
+  },
+  "keywords": [
+    "docker",
+    "docker desktop",
+    "container",
+    "containers",
+    "docker stats",
+    "docker monitor",
+    "docker live",
+    "resource monitor",
+    "cpu",
+    "memory",
+    "docker compose",
+    "dockerfile",
+    "devops",
+    "container tools"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "docker-vitals",
+          "title": "Docker Vitals",
+          "icon": "media/icon-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "docker-vitals": [
+        {
+          "id": "docker-vitals.sidebar",
+          "name": "Docker Vitals",
+          "type": "webview",
+          "visibility": "visible",
+          "icon": "media/icon-activity.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "docker-vitals.sidebar",
+        "contents": "No Docker connection detected.\n\n[Retry Connection](command:docker-vitals.reconnect)\n\nMake sure Docker Desktop (or the Docker daemon) is running.",
+        "when": "!docker-vitals:connected"
+      }
+    ],
+    "commands": [
+      {
+        "command": "docker-vitals.openPanel",
+        "title": "Docker Vitals: Open Panel"
+      },
+      {
+        "command": "docker-vitals.reconnect",
+        "title": "Docker Vitals: Reconnect to Docker"
+      }
+    ],
+    "configuration": {
+      "title": "Docker Vitals",
+      "properties": {
+        "docker-vitals.dockerHost": {
+          "type": "string",
+          "default": "",
+          "description": "Optional remote Docker host (e.g. tcp://192.168.1.10:2375). Leave empty to use the local Docker socket automatically."
+        },
+        "docker-vitals.pollInterval": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 60000,
+          "description": "Resource stats refresh interval in milliseconds"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^4.0.1",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "dockerode": "^4.0.2"
+  }
+}
