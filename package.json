@@ -2,8 +2,8 @@
   "name": "docker-vitals",
   "displayName": "Docker Vitals",
   "description": "Live container resource stats and event timeline for VS Code. See CPU, memory, and network usage update in real time, and watch exactly what changed when you save your Dockerfile or docker-compose.yml.",
-  "version": "0.1.0",
-  "publisher": "REPLACE_WITH_YOUR_PUBLISHER_ID",
+  "version": "0.1.1",
+  "publisher": "ps-aditya",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -77,6 +77,10 @@
       {
         "command": "docker-vitals.reconnect",
         "title": "Docker Vitals: Reconnect to Docker"
+      },
+      {
+        "command": "docker-vitals.setHost",
+        "title": "Docker Vitals: Set Remote Host…"
       }
     ],
     "configuration": {
@@ -99,13 +103,14 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "compile": "tsc -p ./ --noEmit && node esbuild.js --production",
+    "watch": "node esbuild.js --watch"
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.1",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.3.0"
   },
   "license": "MIT",

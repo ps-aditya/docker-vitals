@@ -1,0 +1,17 @@
+.git/
+.gitignore
+webview/
+src/
+.vscode/
+tsconfig.json
+**/*.ts
+**/*.map
+.eslint*
+.prettier*
+*.vsix
+test/
+.vscode-test/
+media/webview-dist/**/*.map
+node_modules/**
+src/**
+esbuild.js

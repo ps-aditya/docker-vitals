@@ -7,6 +7,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public view?: vscode.WebviewView;
 
     private pollTimer: ReturnType<typeof setInterval> | null = null;
+    private diskTimer: ReturnType<typeof setInterval> | null = null;
+    private cpuHistory: number[] = [];
+    private memHistory: number[] = [];
+    private logStop: (() => void) | null = null;
+    private lastComposeSnapshot: string[] = [];
 
     constructor(
         private readonly extensionUri: vscode.Uri,
@@ -63,13 +68,71 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
             // Fetch stats only for running containers, in parallel
             const runningContainers = containers.filter(c => c.state === 'running');
-            const stats = await Promise.all(
+            const stats = (await Promise.all(
                 runningContainers.map(c => this.dockerBridge.getContainerStats(c.id))
-            );
-            this.view.webview.postMessage({ type: 'stats', data: stats.filter(Boolean) });
+            )).filter(Boolean) as any[];
+            this.view.webview.postMessage({ type: 'stats', data: stats });
+
+            // Aggregate + history (max 30 points) — the resource-history differentiator
+            const totalCpu = stats.reduce((s, x) => s + (x.cpuPercent || 0), 0);
+            const totalMem = stats.reduce((s, x) => s + (x.memUsageBytes || 0), 0);
+            this.cpuHistory = [...this.cpuHistory, totalCpu].slice(-30);
+            this.memHistory = [...this.memHistory, totalMem].slice(-30);
+            this.view.webview.postMessage({ type: 'history', data: { cpu: this.cpuHistory, mem: this.memHistory } });
         } catch {
             // Docker may have gone offline mid-refresh; status bar already reflects this
         }
+    }
+
+    async refreshImages() {
+        if (!this.view || !this.dockerBridge.isConnected()) return;
+        try {
+            const images = await this.dockerBridge.listImages();
+            this.view.webview.postMessage({ type: 'images', data: images });
+        } catch (e: any) {
+            this.view.webview.postMessage({ type: 'actionError', data: { message: String(e?.message ?? e) } });
+        }
+    }
+
+    async refreshVitals() {
+        if (!this.view || !this.dockerBridge.isConnected()) return;
+        try {
+            const [disk, sys] = await Promise.all([
+                this.dockerBridge.getDiskUsage(),
+                this.dockerBridge.getSystemInfo().catch(() => null),
+            ]);
+            this.view.webview.postMessage({ type: 'vitals', data: { disk, sys } });
+        } catch { /* non-fatal */ }
+    }
+
+    /** Compose-diff: snapshot container IDs+images; call after compose/Dockerfile save. */
+    async triggerComposeDiff(filename: string) {
+        if (!this.view || !this.dockerBridge.isConnected()) return;
+        try {
+            const before = this.lastComposeSnapshot;
+            await new Promise(r => setTimeout(r, 1500));
+            const containers: any[] = await this.dockerBridge.listContainers();
+            const after = containers.map(c => `${c.name}@${c.image}:${c.state}`);
+            const short = filename.split(/[\\/]/).pop() || filename;
+            if (before.length === 0) { this.lastComposeSnapshot = after; return; }
+            const added = after.filter(x => !before.includes(x));
+            const removed = before.filter(x => !after.includes(x));
+            this.lastComposeSnapshot = after;
+            if (added.length || removed.length) {
+                this.view.webview.postMessage({
+                    type: 'dockerEvent',
+                    data: { Action: `compose-diff: +${added.length} -${removed.length} after ${short}`, Actor: { Attributes: { name: short } } },
+                });
+                this.view.webview.postMessage({ type: 'composeDiff', data: { filename: short, added, removed, timestamp: Date.now() } });
+                this.refreshContainers();
+            }
+        } catch { /* non-fatal */ }
+    }
+
+    snapshotComposeBaseline() {
+        this.dockerBridge.listContainers().then(cs => {
+            this.lastComposeSnapshot = cs.map(c => `${c.name}@${c.image}:${c.state}`);
+        }).catch(() => {});
     }
 
     private startPolling() {
@@ -77,6 +140,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         const config = vscode.workspace.getConfiguration('docker-vitals');
         const interval = config.get<number>('pollInterval', 2000);
         this.pollTimer = setInterval(() => this.refreshContainers(), interval);
+        if (!this.diskTimer) {
+            this.diskTimer = setInterval(() => this.refreshVitals(), 15000);
+            this.refreshVitals();
+        }
     }
 
     private stopPolling() {
@@ -84,28 +151,71 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
         }
+        if (this.diskTimer) {
+            clearInterval(this.diskTimer);
+            this.diskTimer = null;
+        }
+        this.stopLogFollow();
+    }
+
+    private stopLogFollow() {
+        try { this.logStop?.(); } catch { /* noop */ }
+        this.logStop = null;
     }
 
     private async _handleMessage(message: any, webview: vscode.Webview) {
+        const run = async (fn: () => Promise<void>) => {
+            try { await fn(); this.refreshContainers(); }
+            catch (e: any) {
+                webview.postMessage({ type: 'actionError', data: { message: String(e?.message ?? e) } });
+            }
+        };
         switch (message.type) {
             case 'ready':
                 this.refreshContainers();
+                this.refreshImages();
+                this.refreshVitals();
+                this.snapshotComposeBaseline();
                 break;
             case 'startContainer':
-                await this.dockerBridge.startContainer(message.data.id);
-                this.refreshContainers();
+                await run(() => this.dockerBridge.startContainer(message.data.id));
                 break;
             case 'stopContainer':
-                await this.dockerBridge.stopContainer(message.data.id);
-                this.refreshContainers();
+                await run(() => this.dockerBridge.stopContainer(message.data.id));
                 break;
             case 'restartContainer':
-                await this.dockerBridge.restartContainer(message.data.id);
-                this.refreshContainers();
+                await run(() => this.dockerBridge.restartContainer(message.data.id));
                 break;
             case 'removeContainer':
-                await this.dockerBridge.removeContainer(message.data.id);
-                this.refreshContainers();
+                await run(() => this.dockerBridge.removeContainer(message.data.id));
+                break;
+            case 'pauseContainer':
+                await run(() => this.dockerBridge.pauseContainer(message.data.id));
+                break;
+            case 'unpauseContainer':
+                await run(() => this.dockerBridge.unpauseContainer(message.data.id));
+                break;
+            case 'refreshImages':
+                await this.refreshImages();
+                break;
+            case 'removeImage':
+                await run(async () => { await this.dockerBridge.removeImage(message.data.id); await this.refreshImages(); });
+                break;
+            case 'openLogs': {
+                this.stopLogFollow();
+                try {
+                    const tail = await this.dockerBridge.getLogsTail(message.data.id, 100);
+                    webview.postMessage({ type: 'logs', data: { id: message.data.id, lines: tail, follow: true } });
+                    this.logStop = this.dockerBridge.startLogFollow(message.data.id, (line) => {
+                        this.view?.webview.postMessage({ type: 'logLine', data: { id: message.data.id, line } });
+                    });
+                } catch (e: any) {
+                    webview.postMessage({ type: 'actionError', data: { message: String(e?.message ?? e) } });
+                }
+                break;
+            }
+            case 'closeLogs':
+                this.stopLogFollow();
                 break;
         }
     }

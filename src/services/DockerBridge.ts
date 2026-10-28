@@ -215,7 +215,120 @@ export class DockerBridge {
         if (!this.client) throw new Error('Not connected');
         await this.client.getContainer(id).remove({ force: true });
     }
+
+    async pauseContainer(id: string): Promise<void> {
+        if (!this.client) throw new Error('Not connected');
+        await this.client.getContainer(id).pause();
+    }
+
+    async unpauseContainer(id: string): Promise<void> {
+        if (!this.client) throw new Error('Not connected');
+        await this.client.getContainer(id).unpause();
+    }
+
+    async listImages(): Promise<ImageSummary[]> {
+        if (!this.client) throw new Error('Not connected');
+        const images: any[] = await this.client.listImages();
+        return images.map(img => ({
+            id: (img.Id || '').replace(/^sha256:/, '').slice(0, 12),
+            tags: img.RepoTags && img.RepoTags.length ? img.RepoTags : ['<none>:<none>'],
+            sizeBytes: img.Size || 0,
+            created: img.Created || 0,
+        }));
+    }
+
+    async removeImage(id: string): Promise<void> {
+        if (!this.client) throw new Error('Not connected');
+        await this.client.getImage(id).remove({ force: true });
+    }
+
+    async getDiskUsage(): Promise<{ layersSizeBytes: number; images: number; containers: number; volumes: number }> {
+        if (!this.client) return { layersSizeBytes: 0, images: 0, containers: 0, volumes: 0 };
+        try {
+            const df: any = await (this.client as any).df();
+            return {
+                layersSizeBytes: df?.LayersSize ?? 0,
+                images: df?.Images?.length ?? 0,
+                containers: df?.Containers?.length ?? 0,
+                volumes: df?.Volumes?.length ?? 0,
+            };
+        } catch {
+            return { layersSizeBytes: 0, images: 0, containers: 0, volumes: 0 };
+        }
+    }
+
+    async getSystemInfo(): Promise<SystemVitals> {
+        if (!this.client) throw new Error('Not connected');
+        const info: any = await this.client.info();
+        const runtimes = info?.Runtimes ? Object.keys(info.Runtimes) : [];
+        return {
+            cpuCount: info?.NCPU ?? 0,
+            memTotalBytes: info?.MemTotal ?? 0,
+            hasNvidiaRuntime: runtimes.some((r: string) => r.toLowerCase().includes('nvidia')),
+            runtimes,
+            serverVersion: info?.ServerVersion ?? '',
+        };
+    }
+
+    async getLogsTail(id: string, tail = 100): Promise<{ line: string; isStderr: boolean }[]> {
+        if (!this.client) throw new Error('Not connected');
+        const container = this.client.getContainer(id);
+        const logOpts: any = { stdout: true, stderr: true, tail: String(tail), timestamps: false };
+        const stream: any = await container.logs(logOpts);
+        const raw: string = await new Promise((resolve, reject) => {
+            let out = '';
+            stream.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+            stream.on('end', () => resolve(out));
+            stream.on('error', reject);
+        });
+        // Strip docker multiplexed header bytes when present
+        const lines = raw.split('\n').filter(l => l.length > 0).slice(-tail);
+        return lines.map(l => {
+            const clean = l.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]{8}/, '');
+            const isStderr = /^[\x00-\x02]/.test(l) && l.charCodeAt(0) === 2;
+            return { line: clean, isStderr };
+        });
+    }
+
+    startLogFollow(id: string, onLine: (line: string, isStderr: boolean) => void): () => void {
+        if (!this.client) throw new Error('Not connected');
+        const container = this.client.getContainer(id);
+        let stopped = false;
+        let streamRef: any = null;
+        (container.logs({ stdout: true, stderr: true, tail: '50', follow: true } as any) as any).then((stream: any) => {
+            if (stopped) { stream?.destroy?.(); return; }
+            streamRef = stream;
+            let buf = '';
+            stream.on('data', (c: Buffer) => {
+                buf += c.toString('utf8');
+                const parts = buf.split('\n');
+                buf = parts.pop() ?? '';
+                for (const p of parts) {
+                    if (!p) continue;
+                    const clean = p.replace(/^[\x00-\x08\x0B\x0C\x0E-\x1F]{8}/, '');
+                    onLine(clean, false);
+                }
+            });
+            stream.on('error', () => {});
+        }).catch(() => {});
+        return () => { stopped = true; try { streamRef?.destroy?.(); } catch { /* noop */ } };
+    }
 }
+
+export type ImageSummary = {
+    id: string;
+    tags: string[];
+    sizeBytes: number;
+    created: number;
+};
+
+export type SystemVitals = {
+    cpuCount: number;
+    memTotalBytes: number;
+    hasNvidiaRuntime: boolean;
+    runtimes: string[];
+    serverVersion: string;
+};
 
 /**
  * Docker's namesgenerator combines an adjective + a famous scientist's
